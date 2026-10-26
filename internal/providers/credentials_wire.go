@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
@@ -31,6 +32,9 @@ func (r *CredentialsResult) Close() error {
 	}
 	r.closeOnce.Do(func() {
 		var errs []error
+		if r.Service != nil {
+			r.Service.StopBackgroundSync()
+		}
 		if r.Store != nil {
 			if err := r.Store.Close(); err != nil {
 				errs = append(errs, fmt.Errorf("store close: %w", err))
@@ -41,6 +45,13 @@ func (r *CredentialsResult) Close() error {
 		}
 	})
 	return r.closeErr
+}
+
+// StartBackgroundSync begins periodic reads of the shared credential store.
+func (r *CredentialsResult) StartBackgroundSync(interval time.Duration) {
+	if r != nil && r.Service != nil {
+		r.Service.StartBackgroundSync(interval)
+	}
 }
 
 // NewCredentialsStore creates the provider-credentials

@@ -335,6 +335,22 @@ func (r *ModelRegistry) applyFetchedInventory(
 
 	r.mu.Lock()
 	r.dropUnregisteredFetchedProvidersLocked(&fetched)
+	// A full fetch may have started before a credential-driven replacement or
+	// registration. Its stale provider instance is discarded above; keep the
+	// current provider's already-published inventory rather than turning that
+	// race into a catalog gap.
+	for _, provider := range r.providers {
+		name := r.providerNames[provider]
+		if _, fetched := fetched.modelsByProvider[name]; fetched {
+			continue
+		}
+		if _, failed := fetched.runtimeUpdates[name]; failed {
+			continue
+		}
+		if previous := r.discoveredByProvider[name]; len(previous) > 0 {
+			fetched.modelsByProvider[name] = previous
+		}
+	}
 	stale := make(map[string]bool, len(fetched.runtimeUpdates))
 	carriedForward := 0
 	for name := range fetched.runtimeUpdates {

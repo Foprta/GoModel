@@ -162,6 +162,7 @@ func TestBuildDefaultConfig(t *testing.T) {
 	assert.Equal(t, 600, cfg.HTTP.Timeout)
 	assert.Equal(t, 600, cfg.HTTP.ResponseHeaderTimeout)
 	assert.Equal(t, time.Minute, cfg.Workflows.RefreshInterval)
+	assert.Equal(t, 30*time.Second, cfg.ProviderCredentials.RefreshInterval)
 	assert.True(t, cfg.Admin.EndpointsEnabled)
 	assert.True(t, cfg.Admin.UIEnabled)
 	assert.True(t, cfg.Admin.LiveLogsEnabled)
@@ -1271,6 +1272,42 @@ workflows:
 		result, err := Load()
 		require.NoError(t, err)
 		require.Equal(t, 45*time.Second, result.Config.Workflows.RefreshInterval)
+	})
+}
+
+func TestLoad_ProviderCredentialsRefreshInterval(t *testing.T) {
+	clearAllConfigEnvVars(t)
+	t.Setenv("PROVIDER_CREDENTIALS_REFRESH_INTERVAL", "")
+
+	withTempDir(t, func(_ string) {
+		result, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, 30*time.Second, result.Config.ProviderCredentials.RefreshInterval)
+	})
+
+	withTempDir(t, func(dir string) {
+		result := loadConfigYAML(t, dir, "provider_credentials:\n  refresh_interval: 15s\n")
+		assert.Equal(t, 15*time.Second, result.Config.ProviderCredentials.RefreshInterval)
+	})
+
+	withTempDir(t, func(_ string) {
+		t.Setenv("PROVIDER_CREDENTIALS_REFRESH_INTERVAL", "45s")
+		result, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, 45*time.Second, result.Config.ProviderCredentials.RefreshInterval)
+	})
+
+	withTempDir(t, func(_ string) {
+		t.Setenv("PROVIDER_CREDENTIALS_REFRESH_INTERVAL", "0s")
+		result, err := Load()
+		require.NoError(t, err)
+		assert.Zero(t, result.Config.ProviderCredentials.RefreshInterval)
+	})
+
+	withTempDir(t, func(_ string) {
+		t.Setenv("PROVIDER_CREDENTIALS_REFRESH_INTERVAL", "-1s")
+		_, err := Load()
+		assert.ErrorContains(t, err, "provider_credentials.refresh_interval")
 	})
 }
 

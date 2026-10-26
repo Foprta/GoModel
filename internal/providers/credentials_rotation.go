@@ -20,27 +20,26 @@ import (
 // builds, keeps running on its current values; the error says which.
 func (s *CredentialsService) RotateSecrets(ctx context.Context, fields []string) error {
 	rebuilt, err := s.rotateCredentials(ctx, fields)
-	// Outside applyMu, as for a save: the refresh calls every provider.
-	if rebuilt {
-		if err := s.registry.Refresh(ctx); err != nil {
-			slog.Warn("provider rebuilt for a rotated secret but the model catalog refresh failed", "error", err)
-		}
+	for _, name := range rebuilt {
+		s.refreshProviderModels(ctx, name)
 	}
 	return err
 }
 
 // rotateCredentials applies the current secret values to every installed
 // credential owning any of fields, reporting whether one was rebuilt.
-func (s *CredentialsService) rotateCredentials(ctx context.Context, fields []string) (bool, error) {
+func (s *CredentialsService) rotateCredentials(ctx context.Context, fields []string) ([]string, error) {
 	var errs []error
-	rebuilt := false
+	var rebuilt []string
 	for _, name := range s.rotatedCredentials(fields) {
 		changed, err := s.rotateCredential(ctx, name)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("provider credential %q: %w", name, err))
 			continue
 		}
-		rebuilt = rebuilt || changed
+		if changed {
+			rebuilt = append(rebuilt, name)
+		}
 	}
 	return rebuilt, errors.Join(errs...)
 }
@@ -117,7 +116,7 @@ func (s *CredentialsService) rotateCredentialOnce(ctx context.Context, name stri
 		return false, false, err
 	}
 	built.secrets = secrets
-	s.install(name, built)
+	s.install(*row, built)
 	slog.Info("rebuilt provider for a rotated secret", "provider", name)
 	return true, false, nil
 }

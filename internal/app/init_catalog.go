@@ -64,6 +64,7 @@ func (b *bootstrap) initModelCatalog() error {
 		return fmt.Errorf("failed to initialize provider credentials store: %w", err)
 	}
 	app.providerCredentials = providerCredentialsResult
+	app.providerCredentials.StartBackgroundSync(b.cfg.AppConfig.Config.ProviderCredentials.RefreshInterval)
 	app.register(subsystemProviderCredentials, ownedByShutdown, app.providerCredentials.Close)
 	if previous := b.cfg.Replaces; previous != nil && previous.providerCredentials != nil {
 		if err := keepServingEntities("provider credentials", providerCredentialsResult.Service.Skipped(), previous.providerCredentials.Service.Installed); err != nil {

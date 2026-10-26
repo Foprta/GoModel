@@ -131,6 +131,10 @@ type CredentialsService struct {
 	// providers that it reports for config.yaml/env ones.
 	mu      sync.RWMutex
 	configs map[string]ProviderConfig
+	// applied is the last credential row successfully reflected in this
+	// process. Failed builds are deliberately not acknowledged, so polling
+	// retries them without replacing a working adapter.
+	applied map[string]ManagedProviderCredential
 	// keyrings holds each installed provider's keyring, so a rotated API key
 	// is swapped in place rather than rebuilding the provider.
 	keyrings map[string]*Keyring
@@ -138,6 +142,9 @@ type CredentialsService struct {
 	// swap, so work resolved before one of them can tell. Never reset, so a
 	// count cannot repeat.
 	revisions map[string]uint64
+
+	syncMu   sync.Mutex
+	syncStop func()
 }
 
 // NewCredentialsService builds the service and applies every currently
@@ -171,6 +178,7 @@ func NewCredentialsService(ctx context.Context, factory *ProviderFactory, regist
 		resilience:   resilience,
 		secrets:      secrets,
 		configs:      make(map[string]ProviderConfig),
+		applied:      make(map[string]ManagedProviderCredential),
 		keyrings:     make(map[string]*Keyring),
 		revisions:    make(map[string]uint64),
 	}
@@ -205,32 +213,29 @@ func (s *CredentialsService) IsManaged(name string) bool {
 	return ok
 }
 
-// Reload re-registers every enabled, non-shadowed stored credential into the
-// registry (pure in-memory work) and then kicks a non-blocking model-inventory
-// fetch so the newly registered providers' models become routable without
-// delaying the caller — the same async startup contract providers.Init uses
-// for declarative providers, so adding the credentials store never turns
-// gateway startup into a synchronous network round trip to every provider.
-// Declarative providers are untouched: providers.Init already registered them.
+// Reload loads the initial credential snapshot and starts a non-blocking model
+// inventory fetch for providers that were installed. It is a startup operation;
+// background synchronization uses Reconcile instead.
 func (s *CredentialsService) Reload(ctx context.Context) error {
 	rows, err := s.store.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list provider credentials: %w", err)
 	}
-
 	registeredAny := false
 	skipped := make(map[string]error)
 	for _, row := range rows {
+		row.Name = strings.TrimSpace(row.Name)
 		if s.IsManaged(row.Name) {
 			slog.Warn("provider credential from admin store is shadowed by config/env", "provider", row.Name)
 			continue
 		}
 		if !row.Enabled {
+			s.setApplied(row.Name, row)
 			continue
 		}
 		if err := s.register(ctx, row); err != nil {
 			slog.Error("failed to apply stored provider credential", "provider", row.Name, "error", err)
-			skipped[strings.TrimSpace(row.Name)] = err
+			skipped[row.Name] = err
 			continue
 		}
 		registeredAny = true
@@ -308,9 +313,7 @@ func (s *CredentialsService) Upsert(ctx context.Context, cred ManagedProviderCre
 	// of silently vanishing. That is not a save failure: an admin fixing a
 	// typo'd API key should see "saved", not a scary error on every attempt
 	// until the key happens to be valid.
-	if err := s.registry.Refresh(ctx); err != nil {
-		slog.Warn("provider credential saved but its model catalog refresh failed", "provider", name, "error", err)
-	}
+	s.refreshProviderModels(ctx, name)
 	return saveErr
 }
 
@@ -323,11 +326,6 @@ func (s *CredentialsService) Delete(ctx context.Context, name string) error {
 	}
 	if err := s.deleteStored(ctx, name); err != nil {
 		return err
-	}
-	// See the matching comment in Upsert: a Refresh failure here reflects a
-	// remaining provider's own health, not whether the delete succeeded.
-	if err := s.registry.Refresh(ctx); err != nil {
-		slog.Warn("provider credential deleted but the model catalog refresh failed", "provider", name, "error", err)
 	}
 	return nil
 }
@@ -414,9 +412,11 @@ func (s *CredentialsService) apply(ctx context.Context, cred ManagedProviderCred
 	}
 
 	if cred.Enabled {
-		s.install(cred.Name, built)
+		s.install(cred, built)
 	} else {
 		s.remove(cred.Name)
+		s.setApplied(cred.Name, cred)
+		s.clearSkipped(cred.Name)
 	}
 	s.releaseSecrets(ctx, cred.Name, kept, credentialSecretValues(&cred))
 	return saveErr
@@ -484,13 +484,10 @@ func (s *CredentialsService) buildCredential(ctx context.Context, cred ManagedPr
 	return built, nil
 }
 
-// register resolves one stored credential row and registers the resulting
-// adapter into the registry. It does not refresh the model inventory; callers
-// batch that after registering. Only used by Reload (initial population),
-// where there is no previously-live provider to protect, so build-then-install
-// in one step is safe.
+// register applies one startup row without replacing anything already live.
+// Startup preserves the existing skip behavior: an unresolvable row is
+// reported through Skipped and does not fail service construction.
 func (s *CredentialsService) register(ctx context.Context, row ManagedProviderCredential) error {
-	row.Name = strings.TrimSpace(row.Name)
 	resolved, secrets, err := s.resolveCredential(ctx, row)
 	if err != nil {
 		return err
@@ -500,7 +497,7 @@ func (s *CredentialsService) register(ctx context.Context, row ManagedProviderCr
 		return err
 	}
 	built.secrets = secrets
-	s.install(row.Name, built)
+	s.install(row, built)
 	return nil
 }
 
@@ -580,25 +577,19 @@ func firstAndAll(keys []string) (string, []string) {
 	return keys[0], keys
 }
 
-// install unregisters whatever is currently registered under name (a no-op
-// if nothing is), registers the built provider in its place, records its
-// effective configuration, and records its secret references for rotation.
-func (s *CredentialsService) install(name string, built builtCredential) {
+// install atomically replaces the provider and its catalog settings, records
+// its effective configuration, and tracks its secret references for rotation.
+func (s *CredentialsService) install(cred ManagedProviderCredential, built builtCredential) {
+	name := strings.TrimSpace(cred.Name)
 	cfg := built.cfg
-	s.registry.UnregisterProvider(name)
-	s.registry.RegisterProviderWithNameAndType(built.provider, name, cfg.Type)
-	if len(cfg.Models) > 0 {
-		s.registry.SetProviderConfiguredModels(name, cfg.Models)
-	}
-	if len(cfg.ModelMetadataOverrides) > 0 {
-		s.registry.SetProviderMetadataOverrides(name, cfg.ModelMetadataOverrides)
-	}
-	s.registry.SetProviderModelFilter(name, cfg.ModelFilter)
+	s.registry.ReplaceProviderWithConfig(built.provider, cfg)
 
 	s.mu.Lock()
 	s.configs[name] = cfg
 	s.keyrings[name] = built.keys
 	s.revisions[name]++
+	s.applied[name] = cloneCredential(cred)
+	delete(s.skipped, name)
 	s.mu.Unlock()
 	built.secrets.Record()
 }
@@ -611,9 +602,22 @@ func (s *CredentialsService) remove(name string) {
 	s.mu.Lock()
 	delete(s.configs, name)
 	delete(s.keyrings, name)
+	delete(s.applied, name)
 	s.revisions[name]++
 	s.mu.Unlock()
 	s.secrets.ForgetEntity(credentialSecretEntity(name))
+}
+
+func (s *CredentialsService) setApplied(name string, cred ManagedProviderCredential) {
+	s.mu.Lock()
+	s.applied[name] = cloneCredential(cred)
+	s.mu.Unlock()
+}
+
+func (s *CredentialsService) clearSkipped(name string) {
+	s.mu.Lock()
+	delete(s.skipped, name)
+	s.mu.Unlock()
 }
 
 // ConfiguredProviders returns the admin-safe effective configuration of every

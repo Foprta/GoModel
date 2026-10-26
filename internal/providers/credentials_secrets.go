@@ -83,6 +83,11 @@ func credentialSecretValues(cred *ManagedProviderCredential) []string {
 
 func cloneCredential(cred ManagedProviderCredential) ManagedProviderCredential {
 	cred.APIKeys = slices.Clone(cred.APIKeys)
+	cred.Models = slices.Clone(cred.Models)
+	if cred.SessionStickyKeys != nil {
+		value := *cred.SessionStickyKeys
+		cred.SessionStickyKeys = &value
+	}
 	return cred
 }
 

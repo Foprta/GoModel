@@ -22,27 +22,28 @@ import (
 
 // Config holds the application configuration.
 type Config struct {
-	Server        ServerConfig        `yaml:"server"`
-	Models        ModelsConfig        `yaml:"models"`
-	Cache         CacheConfig         `yaml:"cache"`
-	Storage       StorageConfig       `yaml:"storage"`
-	Logging       LogConfig           `yaml:"logging"`
-	Media         MediaConfig         `yaml:"media"`
-	Usage         UsageConfig         `yaml:"usage"`
-	Pricing       PricingConfig       `yaml:"pricing"`
-	Budgets       BudgetsConfig       `yaml:"budgets"`
-	RateLimits    RateLimitsConfig    `yaml:"rate_limits"`
-	Metrics       MetricsConfig       `yaml:"metrics"`
-	OpenTelemetry OpenTelemetryConfig `yaml:"opentelemetry"`
-	HTTP          HTTPConfig          `yaml:"http"`
-	Admin         AdminConfig         `yaml:"admin"`
-	Guardrails    GuardrailsConfig    `yaml:"guardrails"`
-	Failover      FailoverConfig      `yaml:"failover"`
-	Workflows     WorkflowsConfig     `yaml:"workflows"`
-	Resilience    ResilienceConfig    `yaml:"resilience"`
-	Tagging       TaggingConfig       `yaml:"tagging"`
-	Session       SessionConfig       `yaml:"session"`
-	MCP           MCPConfig           `yaml:"mcp"`
+	Server              ServerConfig              `yaml:"server"`
+	Models              ModelsConfig              `yaml:"models"`
+	Cache               CacheConfig               `yaml:"cache"`
+	Storage             StorageConfig             `yaml:"storage"`
+	Logging             LogConfig                 `yaml:"logging"`
+	Media               MediaConfig               `yaml:"media"`
+	Usage               UsageConfig               `yaml:"usage"`
+	Pricing             PricingConfig             `yaml:"pricing"`
+	Budgets             BudgetsConfig             `yaml:"budgets"`
+	RateLimits          RateLimitsConfig          `yaml:"rate_limits"`
+	Metrics             MetricsConfig             `yaml:"metrics"`
+	OpenTelemetry       OpenTelemetryConfig       `yaml:"opentelemetry"`
+	HTTP                HTTPConfig                `yaml:"http"`
+	Admin               AdminConfig               `yaml:"admin"`
+	ProviderCredentials ProviderCredentialsConfig `yaml:"provider_credentials"`
+	Guardrails          GuardrailsConfig          `yaml:"guardrails"`
+	Failover            FailoverConfig            `yaml:"failover"`
+	Workflows           WorkflowsConfig           `yaml:"workflows"`
+	Resilience          ResilienceConfig          `yaml:"resilience"`
+	Tagging             TaggingConfig             `yaml:"tagging"`
+	Session             SessionConfig             `yaml:"session"`
+	MCP                 MCPConfig                 `yaml:"mcp"`
 
 	// Plugins controls which plugin shared objects (.so) are loaded at startup.
 	Plugins PluginsConfig `yaml:"plugins"`
@@ -242,7 +243,8 @@ func buildDefaultConfig() *Config {
 			LiveLogsReplayLimit:      1000,
 			LiveLogsHeartbeatSeconds: 15,
 		},
-		Guardrails: GuardrailsConfig{},
+		ProviderCredentials: ProviderCredentialsConfig{RefreshInterval: 30 * time.Second},
+		Guardrails:          GuardrailsConfig{},
 		Tagging: TaggingConfig{
 			LiteLLMTagsEnabled: true,
 		},
@@ -386,6 +388,9 @@ func Load() (*LoadResult, error) {
 	}
 	if cfg.Server.StreamStallTimeout < 0 {
 		return nil, fmt.Errorf("server.stream_stall_timeout must be 0 or a positive number of seconds; got %d", cfg.Server.StreamStallTimeout)
+	}
+	if cfg.ProviderCredentials.RefreshInterval < 0 {
+		return nil, fmt.Errorf("provider_credentials.refresh_interval must be 0 or a positive duration; got %s", cfg.ProviderCredentials.RefreshInterval)
 	}
 
 	if err := ValidateCacheConfig(&cfg.Cache); err != nil {

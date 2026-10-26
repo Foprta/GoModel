@@ -33,6 +33,14 @@ GoModel automatically discovers providers from well-known environment variables.
 
 ## Configuration Methods
 
+Dashboard-managed provider credentials are reconciled from shared storage on
+each replica every `30s` by default, so dashboard additions, edits, disables,
+and deletes take effect without restarting the gateway. Set
+`provider_credentials.refresh_interval` in `config.yaml` or
+`PROVIDER_CREDENTIALS_REFRESH_INTERVAL` to another Go duration; set it to `0s`
+to disable polling. Provider names declared in config or environment remain
+authoritative and read-only in the dashboard.
+
 ### 1. Environment Variables
 
 The most common way to configure GoModel. Set any of the variables below to override defaults.
